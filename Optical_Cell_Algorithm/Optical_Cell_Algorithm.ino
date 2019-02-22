@@ -19,25 +19,22 @@
 
 const float RREF = 4300.0;                //Value of reference resistor
 const float RNOMINAL = 1000.0;                      //Value of RTd at 0 celcius
-const int DAC = A14;
 const int POT3_3 = A1;
-const int HEATINGLED = 8;
+const int HEATINGLED = 16;
+const int ATTEMPLED = 17;
+const int COOLLED = 18;
 
 double hotSetPoint, hotInput, hotOutput;
-//double coldSetPoint, coldInput, coldOutput;
+double coldSetPoint, coldInput, coldOutput;
 double kP = 400;
 double kI = 300;
 double kD = 30;
-bool heatedUp = false;
-char hotTempBuffer[4] = {'0', '0', '0', '0'};
-
-Adafruit_AlphaNum4 hotTempAlpha = Adafruit_AlphaNum4();
 
 Adafruit_MAX31865 hotSensor = Adafruit_MAX31865(10);  //Hardware SPI, CS on 10
 Adafruit_MAX31865 coldSensor = Adafruit_MAX31865(9);  //Hardware SPI, CS on 9
 
 PID hotPID (&hotInput, &hotOutput, &hotSetPoint, kP, kI, kD, DIRECT);   //PID object for the hot TEC
-//PID coldPID (&coldInput, &coldOutput, &coldSetPoint, 2, 5, 1, DIRECT);   //PID object for the cold TEC
+PID coldPID (&coldInput, &coldOutput, &coldSetPoint, 2, 5, 1, REVERSE);   //PID object for the cold TEC
 
 
 void setup() {
@@ -46,80 +43,67 @@ void setup() {
   hotSensor.begin(MAX31865_2WIRE);
   //coldSensor.begin(MAX31865_2WIRE);
 
-  hotSetPoint = 35.0;                //Target temp for hot sensor
-  //coldSetPoint = 95;                //Target temp for cold sensor
+  hotSetPoint = 30.0;                //Target temp for hot sensor
+  coldSetPoint = 95;                //Target temp for cold sensor
   hotPID.SetMode(AUTOMATIC);        //PID automatically adjusts output smoothly when setpoint changes
   hotPID.SetSampleTime(10);         //Set PID sample time to 10ms
   hotPID.SetOutputLimits(0, 4095);  //Set range of PID output to DAC output
-  //coldPID.SetMode(AUTOMATIC);
-  //coldPID.SetSampleTime(10);
-  //coldPID.SetOutputLimits(0, 4095);
-
-  hotTempAlpha.begin(0x70);
-  hotTempAlpha.setBrightness(6);
+  coldPID.SetMode(AUTOMATIC);
+  coldPID.SetSampleTime(10);
+  coldPID.SetOutputLimits(0, 4095);
 
   analogWriteResolution(12);        //Allows for more accurate output to the DAC
+  pinMode(A14, OUTPUT);      //Attach 100 Ohm to ground
+
   pinMode(HEATINGLED, OUTPUT);      //Attach 100 Ohm to ground
-  digitalWrite(HEATINGLED, HIGH);
+  pinMode(ATTEMPLED, OUTPUT);      //Attach 100 Ohm to ground
+  pinMode(COOLLED, OUTPUT);      //Attach 100 Ohm to ground
 }
 
 void loop() {
   faultCheck(); //Checks for faults
 
-  float hotTemp = hotSensor.temperature(RNOMINAL, RREF);       //Tempature of hot sensor
-  float coldTemp = coldSensor.temperature(RNOMINAL, RREF);     //Tempature of cold sensor
-
-  startHeating(hotTemp);
+  hotInput = hotSensor.temperature(RNOMINAL, RREF);       //Tempature of hot sensor
+  coldInput = coldSensor.temperature(RNOMINAL, RREF);     //Tempature of cold sensor
+  //Serial.println(hotInput);
+  
+  if (hotInput < 25.0) {
+   digitalWrite(COOLLED, HIGH);
+   //Serial.println("Under 25");
+  } else {
+   digitalWrite(COOLLED, LOW);
+   //Serial.println("Above 25");
+  }
+  startHeating();
 
   //printAllValues(hotInput, coldInput);          //Used for testing
-  printPlotter(hotTemp, coldTemp);              //Used for printing to Serial.plotter
-  alphaPrint(hotTemp);
+  printPlotter(hotInput, coldInput);              //Used for printing to Serial.plotter
 }//END LOOP
 
 //====================================================================================
 /**
-   Assigns buffer to print to alpha display
-*/
-void alphaPrint(float temp) {
-  numberSeperation(temp);
-  
-  hotTempAlpha.writeDigitAscii(0, hotTempBuffer[0]);
-  hotTempAlpha.writeDigitAscii(1, hotTempBuffer[1]);
-  hotTempAlpha.writeDigitAscii(2, hotTempBuffer[2]);
-  hotTempAlpha.writeDigitAscii(3, hotTempBuffer[3]);
-
-  hotTempAlpha.writeDisplay();
-}//END ALPHAPRINT
-
-//====================================================================================
-/**
    Controls warming up the device and than activating the PID when hot
 */
-void numberSeperation(float hot) {
-  hotTempBuffer[3] = (int(hot) % 10) + 48;
-  hotTempBuffer[2] = ((int(hot) / 10) % 10) + 48;
-  hotTempBuffer[1] = (((int(hot) / 10) % 10) % 10) + 48;
-  hotTempBuffer[0] = ((((int(hot) / 10) % 10) % 10) % 10) + 48;
-}//END NUMBERSEPERATION
-
-//====================================================================================
-/**
-   Controls warming up the device and than activating the PID when hot
-*/
-void startHeating(float hotTempeture) {
-  hotInput = hotTempeture;
+bool heatedUp = false;
+void startHeating() {
+  //hotPID.Compute();
   if (!heatedUp) {                  //If not heated up yet, run at full power
-    if (hotTempeture < 35.0) {
-      analogWrite(DAC, 4095);
+    if (hotInput < hotSetPoint) {
+      analogWrite(A14, 4095);
+      //Serial.println("Below 30");
+      //Serial.println(hotInput);
       digitalWrite(HEATINGLED, HIGH);   //Turns on LED
+      digitalWrite(ATTEMPLED, LOW);
     } else {
       heatedUp = true;
       digitalWrite(HEATINGLED, LOW);   //Turns off LED
+      digitalWrite(ATTEMPLED, HIGH);
     }
   } else {                             //If heated up, run PID
     hotPID.Compute();
+    analogWrite(A14, hotOutput);
   }
-  analogWrite(DAC, hotOutput);
+
 }
 
 //====================================================================================
