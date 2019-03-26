@@ -1,6 +1,7 @@
 
+
 /**
-   Creating a rubidium optical cell that keeps a constant tempature and creates a cold finger that allows condensation
+   Creating a heated container for a rubidium optical cell that keeps a constant tempature and creates a cold finger that allows condensation
    away from the optical lenses
    @AUTHOR James Deromedi
 
@@ -13,98 +14,170 @@
 
 #include <Adafruit_MAX31865.h>
 #include <PID_v1.h>
+#include <SPI.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include "Adafruit_LEDBackpack.h"
+#include <SFE_MicroOLED.h>
+#include <SavLayFilter.h>
 
-const float RREF = 4300.0;                //Value of reference resistor
-const float RNOMINAL = 1000.0;                      //Value of RTd at 0 celcius
-const int POT3_3 = A1;
-const int HEATINGLED = 16;
-const int ATTEMPLED = 17;
-const int COOLLED = 18;
+const float RREF = 4300.0;         //Value of reference resistor
+const float RNOMINAL = 1000.0;     //Value of RTd at 0 celcius
+const int HOTDAC = A22;
+const int COLDDAC = A21;
+const int KPPIN = A16;
+const int KIPIN = A15;
+const int KDPIN = A14;
+const int SETPOINTPIN = A17;
+const int HEATINGLED = 23;
+const int PIN_RESET = 16;
+const int PIN_DC = 17;
+const int PIN_CS = 15;
 
 double hotSetPoint, hotInput, hotOutput;
 double coldSetPoint, coldInput, coldOutput;
-double kP = 400;
-double kI = 300;
-double kD = 30;
+
+double hotKP = 6000.0; double coldKP = 4096.0;
+double hotKI = 180.0;  double coldKI = 100.0;
+double hotKD = 5.0/ 4.0; double coldKD = 4096.0;
+
+double hotTemperature;
+int convoluteNum = 0;
+int windowSize = 5;
 
 Adafruit_MAX31865 hotSensor = Adafruit_MAX31865(10);  //Hardware SPI, CS on 10
 Adafruit_MAX31865 coldSensor = Adafruit_MAX31865(9);  //Hardware SPI, CS on 9
 
-PID hotPID (&hotInput, &hotOutput, &hotSetPoint, kP, kI, kD, DIRECT);   //PID object for the hot TEC
-PID coldPID (&coldInput, &coldOutput, &coldSetPoint, 2, 5, 1, REVERSE);   //PID object for the cold TEC
+PID hotPID (&hotInput, &hotOutput, &hotSetPoint, hotKP, hotKI, hotKD, DIRECT);   //PID object for the hot TEC
+PID coldPID (&coldInput, &coldOutput, &coldSetPoint, coldKP, coldKI, coldKD, DIRECT);   //PID object for the cold TEC
+SavLayFilter filter (&hotTemperature, convoluteNum, windowSize);
 
+MicroOLED oled(PIN_RESET, PIN_DC, PIN_CS);
 
 void setup() {
   Serial.begin(115200);
-  while (!Serial);
   hotSensor.begin(MAX31865_2WIRE);
-  //coldSensor.begin(MAX31865_2WIRE);
-
+  coldSensor.begin(MAX31865_2WIRE);
   hotSetPoint = 30.0;                //Target temp for hot sensor
-  coldSetPoint = 95;                //Target temp for cold sensor
+  coldSetPoint = 29.0;               //Target temp for cold sensor
+
   hotPID.SetMode(AUTOMATIC);        //PID automatically adjusts output smoothly when setpoint changes
-  hotPID.SetSampleTime(10);         //Set PID sample time to 10ms
+  hotPID.SetSampleTime(50);         //Set PID sample time to 10ms
   hotPID.SetOutputLimits(0, 4095);  //Set range of PID output to DAC output
   coldPID.SetMode(AUTOMATIC);
-  coldPID.SetSampleTime(10);
+  coldPID.SetSampleTime(50);
   coldPID.SetOutputLimits(0, 4095);
 
   analogWriteResolution(12);        //Allows for more accurate output to the DAC
-  pinMode(A14, OUTPUT);      //Attach 100 Ohm to ground
-
+  pinMode(HOTDAC, OUTPUT);
+  pinMode(COLDDAC, OUTPUT);
   pinMode(HEATINGLED, OUTPUT);      //Attach 100 Ohm to ground
-  pinMode(ATTEMPLED, OUTPUT);      //Attach 100 Ohm to ground
-  pinMode(COOLLED, OUTPUT);      //Attach 100 Ohm to ground
+
+  oled.begin();
+  oled.clear(ALL);
+  oled.display();
+  delay(1000);     // Delay 1000 ms
+  oled.clear(PAGE); // Clear the buffer.
+  oled.setFontType(0);
 }
+
 
 void loop() {
   faultCheck(); //Checks for faults
 
-  hotInput = hotSensor.temperature(RNOMINAL, RREF);       //Tempature of hot sensor
-  coldInput = coldSensor.temperature(RNOMINAL, RREF);     //Tempature of cold sensor
-  //Serial.println(hotInput);
-  
-  if (hotInput < 25.0) {
-   digitalWrite(COOLLED, HIGH);
-   //Serial.println("Under 25");
-  } else {
-   digitalWrite(COOLLED, LOW);
-   //Serial.println("Above 25");
-  }
-  startHeating();
+  hotInput = hotSensor.temperature(RNOMINAL, RREF);
+  //coldInput = coldSensor.temperature(RNOMINAL, RREF);
 
-  //printAllValues(hotInput, coldInput);          //Used for testing
-  printPlotter(hotInput, coldInput);              //Used for printing to Serial.plotter
+  tuning(false);                                   //Allows for dynamic changes of the PID algorithm
+  startHeating();                               //Calls the PID algorithm
+  printPlotter(hotInput, coldInput);            //Used for printing to Serial.plotter
+  LEDControl(hotInput, coldInput);                                 //Just controls LEDs
+
+
+
 }//END LOOP
 
 //====================================================================================
 /**
-   Controls warming up the device and than activating the PID when hot
-*/
-bool heatedUp = false;
-void startHeating() {
-  //hotPID.Compute();
-  if (!heatedUp) {                  //If not heated up yet, run at full power
-    if (hotInput < hotSetPoint) {
-      analogWrite(A14, 4095);
-      //Serial.println("Below 30");
-      //Serial.println(hotInput);
-      digitalWrite(HEATINGLED, HIGH);   //Turns on LED
-      digitalWrite(ATTEMPLED, LOW);
-    } else {
-      heatedUp = true;
-      digitalWrite(HEATINGLED, LOW);   //Turns off LED
-      digitalWrite(ATTEMPLED, HIGH);
-    }
-  } else {                             //If heated up, run PID
-    hotPID.Compute();
-    analogWrite(A14, hotOutput);
-  }
+   TODO: Add ability to change to second PID algorithm without repushing to Teensy
+         Figure out why the pots have such a bouncy signal
 
+   Reads the different pots and maps them to an appropriate range for each parameter
+   Outputs the values to a OLED screen the values of the POT to be used for tuning
+   @PARAM None
+   @RETURN None
+*/
+void tuning(bool tune) {
+  if (tune) {
+    float kPInput = map(analogRead(KPPIN), 0, 1023, 0, 8190);
+    float kIInput = map(analogRead(KIPIN), 0, 1023, 0, 4095);
+    float kDInput = map(analogRead(KDPIN), 0, 1023, 0, 200);
+    hotSetPoint = map(analogRead(SETPOINTPIN), 0, 1023, 20, 50);
+
+    hotPID.SetTunings(kPInput, kIInput, kDInput);                   //Setting the new parameters
+
+    //Writes the left side of the screen
+    oled.clear(PAGE);
+    oled.setCursor(0, 0);
+    oled.print("Set:");
+    oled.setCursor(0, 10);
+    oled.print("kP:");
+    oled.setCursor(0, 20);
+    oled.print("kI:");
+    oled.setCursor(0, 30);
+    oled.print("kD:");
+
+    //Writes the changing varaiables
+    oled.setCursor(25, 0);
+    oled.print(int(hotSetPoint));
+    oled.setCursor(18, 10);
+    oled.print(int(kPInput));
+    oled.setCursor(18, 20);
+    oled.print(int(kIInput));
+    oled.setCursor(18, 30);
+    oled.print(int(kDInput));
+
+    oled.setCursor(33, 40);
+    oled.print(hotInput);
+    oled.display();
+  } else {
+    oled.clear(PAGE);
+    oled.setCursor(33, 40);
+    oled.print(hotInput);
+    oled.display();
+  }
 }
+
+//====================================================================================
+/**
+   Controls calling the PID algorithm, while the Compute() automatically controls when it is run
+   @PARAM None
+   @RETURN None
+*/
+void startHeating() {
+  hotPID.Compute();
+  //coldPID.Compute();
+
+  analogWrite(HOTDAC, hotOutput);
+  //analogWrite(COLDDAC, coldOutput);
+}//END STARTHEATING
+
+//====================================================================================
+/**
+   Controls LEDS
+   @PARAM None
+   @RETURN None
+*/
+void LEDControl(float hotTemp, float coldTemp) {
+  if (hotTemp <= (hotSetPoint + 0.15) && hotTemp >= (hotSetPoint - 0.15)) {
+    digitalWrite(HEATINGLED, HIGH);                //Turns on LED
+  } else {
+    digitalWrite(HEATINGLED, LOW);                 //Turns off LED
+  }
+  if (coldTemp < 29.1 && coldTemp > 28.9) {
+    //TODO: Add second LED for cold temp
+  }
+}//END LEDCONTROL
 
 //====================================================================================
 /**
@@ -124,13 +197,13 @@ void printAllValues(float hotTempature, float coldTempature) {
   Serial.print("/t --Mode:"); Serial.println(hotPID.GetMode());
   Serial.print("/t --Direction:"); Serial.println(hotPID.GetDirection());
   Serial.println("");
-  //  Serial.println("Cold PID Values");
-  //  Serial.print("/t --Kp:"); Serial.println(coldPID.GetKp());
-  //  Serial.print("/t --Ki:"); Serial.println(coldPID.GetKi());
-  //  Serial.print("/t --Kd:"); Serial.println(coldPID.GetKd());
-  //  Serial.print("/t --Mode:"); Serial.println(coldPID.GetMode());
-  //  Serial.print("/t --Direction:"); Serial.println(coldPID.GetDirection());
-  //  Serial.println("");
+  Serial.println("Cold PID Values");
+  Serial.print("/t --Kp:"); Serial.println(coldPID.GetKp());
+  Serial.print("/t --Ki:"); Serial.println(coldPID.GetKi());
+  Serial.print("/t --Kd:"); Serial.println(coldPID.GetKd());
+  Serial.print("/t --Mode:"); Serial.println(coldPID.GetMode());
+  Serial.print("/t --Direction:"); Serial.println(coldPID.GetDirection());
+  Serial.println("");
 }//END PRINTALLVALUES
 
 //====================================================================================
@@ -141,9 +214,14 @@ void printAllValues(float hotTempature, float coldTempature) {
    @RETURN None
 */
 void printPlotter(float hotTempature, float coldTempature) {
+  Serial.print(hotSetPoint);
+  Serial.print(",");
+  //  Serial.print(coldSetPoint);
+  //  Serial.print(",");
+  //Serial.println(coldTempature);
+  //  Serial.print(",");
   Serial.println(hotTempature);
-  //Serial.print(",");
-  //Serial.print(coldTempature);
+
 }//END PRINTVALUES
 
 //====================================================================================
