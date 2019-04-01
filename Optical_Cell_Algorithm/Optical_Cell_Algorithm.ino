@@ -1,11 +1,9 @@
-
-
 /**
    Creating a heated container for a rubidium optical cell that keeps a constant tempature and creates a cold finger that allows condensation
    away from the optical lenses
    @AUTHOR James Deromedi
 
-   PID setup (input, output, setpoint, Kp, Ki, Kd, direction)
+   PID setup (input, output, setpoint, Kp, Ki, 0Kd, direction)
    Kp -Determines how aggressively PID reacts to the current error
    Ki -Determines how aggressively PID reacts to error over time
    Kd -Determines how aggressively PID reacts to change in error
@@ -37,9 +35,9 @@ const int PIN_CS = 15;
 double hotSetPoint, hotInput, hotOutput;
 double coldSetPoint, coldInput, coldOutput;
 
-double hotKP = 6000.0; double coldKP = 4096.0;
-double hotKI = 180.0;  double coldKI = 100.0;
-double hotKD = 5.0/ 4.0; double coldKD = 4096.0;
+double hotKP = 1800.0; double coldKP = 4096.0;
+double hotKI = .0330;  double coldKI = 100.0;
+double hotKD = 505.4; double coldKD = 4096.0;
 
 double hotTemperature;
 int convoluteNum = 0;
